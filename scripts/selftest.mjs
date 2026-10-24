@@ -268,6 +268,20 @@ group("[4] 上报值解析", () => {
 	eq("[4] 归一模型名：去 :latest、去组织前缀", [I.normalizeModelId("Qwen/Qwen2-7B:latest"), I.normalizeModelId("iq3_xxs")], ["qwen2-7b", "iq3_xxs"]);
 	eq("[4] 身份判定三态", [I.identityVerdict("", "m"), I.identityVerdict("m", "m"), I.identityVerdict("x", "m")], ["unverified", "match", "mismatch"]);
 	eq("[4] 声明的模型清单 = models 列表 + modelOverrides 点名", I.declaredModels({ models: [{ id: "a" }, { id: "b" }], modelOverrides: { c: {} } }), ["a", "b", "c"]);
+
+	// 邻居名字包含本模型、又排在自己前面：读上报值时不许把邻居的窗口拿过来
+	const SIBLING_LIST = {
+		data: [
+			{ id: "qwen3.8-flash-next-iq3_xxs_abliterated", meta: { n_ctx: 1048576 } },
+			{ id: "iq3_xxs_abliterated", meta: { n_ctx: 524288 } },
+		],
+	};
+	const siblingList = I.parseContextReport("models", SIBLING_LIST, "iq3_xxs_abliterated", PARSERS);
+	eq("[4] 列表里有同名的自己：只认自己那条的窗口", [siblingList.value, siblingList.echoed], [524288, "iq3_xxs_abliterated"]);
+	const aliasOnly = I.parseContextReport("models", { data: [SIBLING_LIST.data[0]] }, "iq3_xxs_abliterated", PARSERS);
+	eq("[4] 列表里只有别名条目：仍按包含匹配认下来", aliasOnly.value, 1048576);
+	const siblingTable = I.parseContextReport("models", { models: { "qwen3.8-flash-next-iq3_xxs_abliterated": { limit: { context: 1048576 } }, "iq3_xxs_abliterated": { limit: { context: 524288 } } } }, "iq3_xxs_abliterated", PARSERS);
+	eq("[4] models 是对象表时同样先点名", siblingTable.value, 524288);
 });
 
 // ---------- [5] providers patch 生成 ----------
@@ -277,6 +291,26 @@ group("[5] providers patch 生成", () => {
 	eq("[5] 已有条目：只改 contextWindow，别的字段与邻居都不动", updated.providers.lan, { ...PROVIDERS_FIXTURE.lan, models: [{ id: "iq3_s", name: "iq3_s", contextWindow: 524288 }] });
 	check("[5] 其余路由原样保留", updated.providers.cloud === PROVIDERS_FIXTURE.cloud && updated.providers.strata === PROVIDERS_FIXTURE.strata);
 	eq("[5] 改动被如实报告", [updated.changed, updated.notes], [true, ["models_entry_updated"]]);
+
+	// 同一路由里 `foo` 与 `<前缀>-foo` 并存（本机 profile 的实测形状）：写盘必须落在自己那条上
+	const SIBLING_FIXTURE = {
+		strata: {
+			displayName: "[Local Strata]",
+			api: "openai-completions",
+			baseURL: "http://127.0.0.1:47833/v1",
+			models: [
+				{ id: "qwen3.8-flash-next-iq3_xxs_abliterated", name: "qwen3.8-flash-next-iq3_xxs_abliterated" },
+				{ id: "iq3_xxs_abliterated", name: "iq3_xxs_abliterated" },
+			],
+		},
+	};
+	const ontoSelf = I.patchProvidersForCapacity(SIBLING_FIXTURE, "strata", "iq3_xxs_abliterated", 1048576);
+	eq("[5] 邻居排在前面又名字包含自己：写自己那条，邻居不动", ontoSelf.providers.strata.models.map((row) => row.contextWindow ?? null), [null, 1048576]);
+	eq("[5] 这条走的是「改已有条目」而不是补一条", [ontoSelf.changed, ontoSelf.notes, ontoSelf.providers.strata.models.length], [true, ["models_entry_updated"], 2]);
+	const alreadySelf = I.patchProvidersForCapacity(ontoSelf.providers, "strata", "iq3_xxs_abliterated", 1048576);
+	eq("[5] 自己那条已一致就是 already（邻居没值也不算该写）", [alreadySelf.changed, alreadySelf.notes], [false, ["already"]]);
+	const looseStill = I.patchProvidersForCapacity({ strata: { models: [{ id: "qwen3.8-flash-next-iq3_xxs_abliterated", name: "qwen3.8-flash-next-iq3_xxs_abliterated" }] } }, "strata", "iq3_xxs_abliterated", 1048576);
+	eq("[5] 没有同名条目时才退到包含匹配（别名服务端的兜底还在）", [looseStill.providers.strata.models[0].contextWindow, looseStill.notes], [1048576, ["models_entry_updated"]]);
 
 	const added = I.patchProvidersForCapacity(PROVIDERS_FIXTURE, "strata", "brand-new-model", 524288);
 	eq("[5] 列表里没这个模型：追加一条 {id,name,contextWindow}", added.providers.strata.models[2], { id: "brand-new-model", name: "brand-new-model", contextWindow: 524288 });

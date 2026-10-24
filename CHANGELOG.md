@@ -3,6 +3,17 @@
 All notable changes to `dsh-context-governor` are documented here. The Chinese twin is
 [`CHANGELOG.zh-CN.md`](CHANGELOG.zh-CN.md); both are maintained together.
 
+## 0.1.3 — 2026-10-25
+
+### Fixed
+
+- **The capacity used to land on a sibling entry whose name merely contains the requested model.** When one route's `models` list holds both `iq3_xxs_abliterated` and `qwen3.8-flash-next-iq3_xxs_abliterated`, entry lookup judged identity only by substring containment, so the neighbour listed first got rewritten while the model actually in use stayed at *pending apply* (measured here: the neighbour moved from the 262144 fallback to 1048576 and the session's own row never changed; every later pass hit that same neighbour, found the value already equal, returned `already` — no disk churn, but never the right row either). `patchProvidersForCapacity` now looks for the entry whose normalized `id` / `name` equals the requested model first, and only then falls back to containment (so a server that echoes only an alias is still handled).
+- Reading `{baseURL}/models` and the `models` object table follows the same rule: pick your own entry by exact name first, containment second — otherwise a neighbour's `meta.n_ctx` / `limit.context` gets read as this model's reported capacity (likely exactly when both sit on one port, neighbour first).
+
+### Tests
+
+- 7 new selftest items: `[4]` three (two entries side by side — only your own counts / alias-only list still accepted / object table with both), `[5]` four (own entry written and neighbour untouched, an existing entry is updated rather than appended, own entry already equal is `already`, loose containment only when no exact entry exists). Now **14 groups / 239 items**.
+
 ## 0.1.2 — 2026-10-25
 
 ### Changed
