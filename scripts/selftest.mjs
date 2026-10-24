@@ -347,7 +347,7 @@ group("[7] 状态与设置文件", () => {
 	eq("[7] 默认状态文件落在 .dsh/storages/context-governor 下", I.resolveStateFile({ ...fullConfig(), stateFile: "" }).split(path.sep).slice(-3), ["storages", "context-governor", "state.json"]);
 	eq("[7] 自定义 stateFile 时设置文件在同目录", I.resolveSettingsFile({ ...fullConfig(), stateFile }), settingsFile);
 
-	eq("[7] 文件不存在时读到空对象 / 空状态", [I.readSettingsFile(settingsFile), I.readStateFile(stateFile)], [{}, { version: 1, applied: {}, probes: {}, audit: [], writes: [] }]);
+	eq("[7] 文件不存在时读到空对象 / 空状态", [I.readSettingsFile(settingsFile), I.readStateFile(stateFile)], [{}, { version: 1, applied: {}, probes: {}, audit: [], writes: [], compaction: { written: [], via: null, at: null, code: null } }]);
 
 	I.writeSettingsFile(settingsFile, { thresholdRatio: 0.85, autoFixContextWindow: false });
 	const written = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
@@ -386,6 +386,9 @@ async function withFetch(stub, body) {
 function fakeCtxFor(options) {
 	const dir = mkdtemp("dcg-ctx-");
 	const stateFile = path.join(dir, "state.json");
+	// configEditor 的 documentPath 指这里；兜底通道直接读写这份"profile patch"
+	const patchFile = path.join(dir, "cordis.patch.yml");
+	if (typeof options.patchFileText === "string") fs.writeFileSync(patchFile, options.patchFileText, "utf8");
 	const providers = structuredClone(options.providers ?? PROVIDERS_FIXTURE);
 	const rows = [
 		{ options: { id: I.LLM_ROW_ID, name: I.LLM_ROW_NAME, config: { providers } } },
@@ -400,6 +403,8 @@ function fakeCtxFor(options) {
 		services.configEditor = {
 			entries: () => rows,
 			edit: async (row, change) => {
+				// 组里 isolate 的嵌套条目没有活 fiber，真 configEditor 就是这么直拒的
+				if (options.editorThrows) throw new Error("Configuration entry is no longer available");
 				const next = change(structuredClone(row.options.config ?? {}), structuredClone(row.options.config ?? {}));
 				row.options.config = structuredClone(next);
 				if (row.options.id === I.LLM_ROW_ID) Object.assign(providers, row.options.config.providers);
@@ -434,7 +439,7 @@ function fakeCtxFor(options) {
 	const meterTokens = { value: options.meterTokens ?? 0 };
 	if (options.tokenMeter !== false) services.tokenMeter = { measure: () => ({ totalTokens: meterTokens.value, surfaceTokens: meterTokens.value, nodes: [] }) };
 	if (options.credentials !== false) services.credentials = { resolve: async (ref) => (ref === "TEST_STRATA_KEY" ? { value: "sk-test-key" } : null) };
-	const captured = { handler: null, editorWrites, listeners, effects, logs, compactCalls, meterTokens, providers, rows, dir, stateFile, services };
+	const captured = { handler: null, editorWrites, listeners, effects, logs, compactCalls, meterTokens, providers, rows, dir, stateFile, patchFile, services };
 	if (options.webServer !== false) {
 		services.webServer = {
 			register: ({ path: prefix, handler }) => {
@@ -1154,6 +1159,89 @@ group("[13] 清单一致性", () => {
 	eq("[13] 没有任何运行时依赖（零依赖红线：装了起不来会拖垮整个插件树）", [pkg.dependencies === undefined, pkg.peerDependencies === undefined], [true, true]);
 	eq("[13] 客户端注入声明只列宿主客户端包（不 require 宿主包）", pkg.dsh.client.inject.every((id) => id.startsWith("@deepseek-ai/")), true);
 	check("[13] 宿主侧不 import 任何框架包（服务一律 ctx.get 可选取用）", !/(^|\n)\s*import .*from "(?!node:)/.test(fs.readFileSync(path.join(ROOT, "lib", "index.js"), "utf8")));
+});
+
+await groupAsync("[14] profile patch 顶层直写（configEditor 够不到时的兜底）", async () => {
+	const header = "# Your patch layer for this dsh profile\n# 第二行是宿主的说明\n";
+	const base = `${header}- id: llm-pi-ai\n  name: "@deepseek-ai/dsh-llm-pi-ai"\n  config:\n    providers:\n      strata:\n        baseURL: "http://127.0.0.1:1/v1"\n- id: subagent\n  name: "@deepseek-ai/dsh-subagent"\n  config:\n    maxDepth: 0\n`;
+	const commentLines = [`${I.PATCH_ROW_MARKER} 写的：注释`, "第二行"];
+	const rowOpts = { rowId: I.COMPACT_ROW_ID, rowName: I.COMPACT_ROW_NAME, commentLines };
+	const plan = { thresholdRatio: 0.9, retainRatio: 0.25 };
+
+	const added = I.applyPatchRowOverride(base, { ...rowOpts, config: plan });
+	eq("[14] 顶层没有那条就在文件尾追加一条", [added.ok, added.code, added.text.startsWith(base)], [true, "row_added", true]);
+	check("[14] 追加不动别人的行，自己的注释一起写进去", added.text.includes("maxDepth: 0") && added.text.includes("# 第二行") && added.text.includes(`- id: ${I.COMPACT_ROW_ID}`));
+
+	const again = I.applyPatchRowOverride(added.text, { ...rowOpts, config: plan });
+	eq("[14] 内容一样就是 already，不重复写盘也不多塞一条", [again.ok, again.code, again.text === added.text, again.text.split(`- id: ${I.COMPACT_ROW_ID}`).length - 1], [true, "already", true, 1]);
+
+	const updated = I.applyPatchRowOverride(again.text, { ...rowOpts, config: { thresholdRatio: 0.7 } });
+	eq("[14] 值变了就地改写那一段（连自己的注释），全文只有一条", [updated.ok, updated.code, updated.text.split(`- id: ${I.COMPACT_ROW_ID}`).length - 1], [true, "row_updated", 1]);
+	check("[14] 改写只换那一段：文件头与别人的条目原样，多余的键被整段替换掉", updated.text.startsWith(header) && updated.text.includes("maxDepth: 0") && !updated.text.includes("retainRatio"));
+
+	const jsRow = `${base}- id: ${I.COMPACT_ROW_ID}\n  name: "${I.COMPACT_ROW_NAME}"\n  disabled: !!js "!ctx.get('profileContext')"\n`;
+	const refused = I.applyPatchRowOverride(jsRow, { ...rowOpts, config: plan });
+	eq("[14] 那一段里带 !!js 表达式就一律不动（不拿纯文本改写赌语法）", [refused.ok, refused.code, refused.text === jsRow], [false, "row_has_js_expression", true]);
+
+	const crlf = base.replace(/\n/g, "\r\n");
+	const addedCrlf = I.applyPatchRowOverride(crlf, { ...rowOpts, config: plan });
+	eq("[14] CRLF 的文件改写后还是 CRLF（不把宿主的文件换成另一种行尾）", [addedCrlf.text.includes("\r\n# "), addedCrlf.text.includes("\n\r"), addedCrlf.text.split("\r\n").length > 8], [true, false, true]);
+
+	const nested = `- id: compaction\n  name: cordis:group\n  group: true\n  config:\n    - id: ${I.COMPACT_ROW_ID}\n      name: "${I.COMPACT_ROW_NAME}"\n`;
+	eq("[14] 缩进里的同名条目不被当成入口（override 一律走顶层）", I.locatePatchRow(nested, I.COMPACT_ROW_ID).start, -1);
+	const ontoNested = I.applyPatchRowOverride(nested, { ...rowOpts, config: plan });
+	eq("[14] 组里那条没被改动，顶层照旧多一条 override", [ontoNested.code, ontoNested.text.includes(`    - id: ${I.COMPACT_ROW_ID}\n      name:`)], ["row_added", true]);
+
+	const writtenFile = I.writeTextFileAtomic(path.join(mkdtemp("dcg-patch-"), "sub", "cordis.patch.yml"), added.text);
+	eq("[14] 落盘走临时文件 + rename（原子，宿主读不到半截）", [writtenFile, added.text.length > 100], [true, true]);
+
+	const mergedPut = I.mergeCompactionRowConfig({ thresholdRatio: 0.9 }, { thresholdRatio: 0.8, retainRatio: 0.3, headroomTokens: null, retainTokens: null }, ["thresholdRatio"]);
+	eq("[14] 回到宿主默认时删掉自己写过的键（别的键照写不误）", [mergedPut.config.thresholdRatio, mergedPut.set, mergedPut.cleared], [undefined, ["retainRatio"], ["thresholdRatio"]]);
+	const mergedKeep = I.mergeCompactionRowConfig({ thresholdRatio: 0.7 }, { thresholdRatio: 0.8, retainRatio: null, retainTokens: null, headroomTokens: null }, []);
+	eq("[14] 别人手写的键不替人删（不越权）", [mergedKeep.config.thresholdRatio, mergedKeep.changed], [0.7, false]);
+	const mergedMutex = I.mergeCompactionRowConfig({ retainRatio: 0.4 }, { thresholdRatio: 0.8, retainRatio: null, retainTokens: 20000, headroomTokens: null }, []);
+	eq("[14] retainTokens 与 retainRatio 并存宿主禁止：这种删除不问出处", [mergedMutex.config.retainRatio, mergedMutex.config.retainTokens, mergedMutex.cleared], [undefined, 20000, ["retainRatio"]]);
+	const mergedBlocked = I.mergeCompactionRowConfig({}, { thresholdRatio: 0.5, retainRatio: 0.6, retainTokens: null, headroomTokens: null }, []);
+	eq("[14] retain ≥ threshold 当场挡住，不把宿主会拒的配置写进去", [mergedBlocked.blocked, mergedBlocked.changed], ["retain_conflict", false]);
+
+	const rendered = I.yamlValueLines({ summarizationModel: "a b", modelPolicies: [{ provider: "p", model: "m", thresholdRatio: 0.7 }], maxTokens: 4096, auto: false }, 1).join("\n");
+	eq("[14] 值渲染：数字布尔裸写、带空格/冒号的字符串加引号、对象数组把首键提到 - 后", rendered, [
+		'  summarizationModel: "a b"',
+		"  modelPolicies:",
+		"    - provider: p",
+		"      model: m",
+		"      thresholdRatio: 0.7",
+		"  maxTokens: 4096",
+		"  auto: false",
+	].join("\n"));
+
+	// 端到端：configEditor 直拒（isolate 组里的条目没有 fiber）→ 兜底把那条写进 patch 文件
+	const env = fakeCtxFor({
+		editorThrows: true,
+		patchFileText: "# Your patch layer for this dsh profile\n- id: ui-chat\n  name: \"@deepseek-ai/dsh-client-ui-chat\"\n  config:\n    transcriptView: standard\n",
+	});
+	host.apply({ ...env.ctx }, { stateFile: env.stateFile, retainRatio: 0.2 });
+	for (let i = 0; i < 40; i += 1) {
+		if (I.readStateFile(env.stateFile).compaction.via) break;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	const patched = fs.readFileSync(env.patchFile, "utf8");
+	const stateAfter = I.readStateFile(env.stateFile);
+	check("[14] 兜底真的把那条写进了 patch 文件（别人的行一条不丢）", patched.includes(`- id: ${I.COMPACT_ROW_ID}`) && patched.includes("retainRatio: 0.2") && patched.includes("transcriptView: standard") && patched.startsWith("# Your patch layer"));
+	eq("[14] 状态与审计记清这次走的是哪条通道", [stateAfter.compaction.via, stateAfter.compaction.written, stateAfter.audit.filter((entry) => entry.kind === "compaction_synced").map((entry) => entry.via)], ["patch", ["retainRatio"], ["patch"]]);
+	check("[14] 走兜底时日志说人话", env.logs.info.some((line) => line.includes("profile patch")), JSON.stringify(env.logs.info));
+
+	// 已经写过了、值也一样：不再动文件，也不重复记账
+	const envDone = fakeCtxFor({
+		editorThrows: true,
+		compactionConfig: { retainRatio: 0.2 },
+		patchFileText: patched,
+	});
+	host.apply({ ...envDone.ctx }, { stateFile: envDone.stateFile, retainRatio: 0.2 });
+	await new Promise((resolve) => setTimeout(resolve, 220));
+	const patchedAfter = fs.readFileSync(envDone.patchFile, "utf8");
+	const stateDone = I.readStateFile(envDone.stateFile);
+	eq("[14] 值已一致就不写文件、不重复审计（幂等）", [patchedAfter === patched, stateDone.audit.filter((entry) => entry.kind === "compaction_synced").length, stateDone.compaction.via], [true, 0, null]);
 });
 
 // ---------- 收尾 ----------

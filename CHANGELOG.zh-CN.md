@@ -2,6 +2,35 @@
 
 `dsh-context-governor` 的全部可见变化记在这里；英文版 [`CHANGELOG.md`](CHANGELOG.md) 与此文件一同维护。
 
+## 0.1.1 — 2026-10-25
+
+### 新增
+
+- **压缩配置的兜底写入通道。** 桌面/Web profile 的 `standard` 预设把 `compaction-basic` 关进
+  `cordis:group` + `isolate: compaction`：那种嵌套条目没有活 fiber，`configEditor` 会当场拒
+  （`Configuration entry is no longer available`），`ctx.compaction` 也看不见。这时插件改往 profile 的
+  `cordis.patch.yml` 追加/改写一条**顶层** `- id: compaction-basic` override（loader 的 id 索引会递归进
+  group 的 config，宿主对这份文件的监听会热重组那一行；本机实测 6 秒内条目配置就换了）。这条通道只做
+  行级文本改写：不解析整份 YAML、不动别人的行、内容一样就不写盘（幂等）、那一段带 `!!js` 表达式就一律
+  不动、删键只删自己写过的（`retainRatio` / `retainTokens` 并存是宿主硬性禁止的，这种删除不问出处）、
+  CRLF 文件保持 CRLF，并用一段带 `dsh-context-governor` 字样的注释认回自己写的那一段。
+- 状态载荷与设置页说明补全：`compaction.via` / `writtenKeys` / `lastSyncAt` / `lastSyncCode` /
+  `patchWritable` / `onHostRetainTokens`；设置页新增「这次后端配置走的是哪条通道」一行、阈值预览里 O 的
+  口径说明，以及「写入安全系数」的解释（值仍按你填的算，插件不替你改）。
+
+### 修复
+
+- **启动时正好需要写一次，会把串行写入队列钉死。** `enqueue` 链里的任务自己再 `enqueue`（同步阈值时套
+  `editRow`）会去等"包含它自己的那一段链"，两边互相等：启动同步和其后所有 patch 写入永久排队。重入时
+  改为就地执行（本来就已经在那段串行里），`[14]` 组端到端盯住这条。
+- 顶层条目的段落边界不再把段尾空行算进去（否则"内容完全一样"也会被误判成需要改写）。
+
+### 测试
+
+- 离线自检新增 `[14]` 组：追加 / 幂等 / 就地改写 / 带 `!!js` 不动 / CRLF 保持 / 缩进里的同名条目不当入口 /
+  合并语义（只删自己写过的、互斥不问出处、`retain ≥ threshold` 当场挡住）/ YAML 值渲染形状，以及假
+  `configEditor` 直拒之后的完整兜底落盘。现 **14 组 / 232 项**。
+
 ## 0.1.0 — 2026-10-25
 
 首个版本。

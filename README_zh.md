@@ -59,7 +59,9 @@ DSH 里「这个模型有多大上下文」（`contextWindow`）由 `@deepseek-a
 
 - 用户没改过比例时**一次盘都不写**（宿主默认本来就是 0.8）。
 - 写之前先在快照上算一遍：`retainRatio ≥ thresholdRatio` 这种宿主会在加载时拒绝的组合，直接挡下并回报原因，不把坏配置写进去。
-- 阈值写不进后端配置时（`writeCompactionConfig: false`，或那条 config 行不归本 profile 写），`ownPressureTrigger: "auto"` 让本插件自己在 `agent/pre-step` 上按同一口径调用 `ctx.compaction.compactIfNeeded()`；`always` = 与后端一起盯，`never` = 完全交给后端。
+- **两条写入通道，自动选**：先走 `configEditor`；够不到那一行时改走 profile patch 顶层直写。为什么要第二条路——桌面/Web profile 的 `standard` 预设把压缩三件套装进 `- id: compaction`（`cordis:group` + `isolate: compaction`）里，组里的嵌套条目**没有活 fiber**，`configEditor` 会当场拒（`Configuration entry is no longer available`），`ctx.compaction` 也因 isolate 取不到。而 loader 的 id 索引会**递归进 group 的 config**、宿主对 `cordis.patch.yml` 本身有监听 —— 所以往这份文件追加一条**顶层** `- id: compaction-basic / config: {…}` 就能被认下并热重组（本机实测：写完 6 秒，那一行组合出来的配置就从无变成 `retainRatio: 0.2`）。设置页的「这次后端配置走的是哪条通道」一行说的就是这件事。
+- 顶层直写这条通道只做行级文本改写，分寸拿捏在：不解析整份 YAML、不动别人的行、内容一样就不写盘（幂等）、那一段带 `!!js` 表达式就**一律不动**、**删键只删自己写过的**（`retainRatio` / `retainTokens` 并存是宿主禁止的，这种"必须二选一"的删除不问出处）、CRLF 文件保持 CRLF，并且靠一段带 `dsh-context-governor` 字样的注释认回自己写过的那一段（改写时连注释一起换，不会越攒越多）。注意顶层 override 会**整段替换**那条的 config，所以插件先把条目当前组合出来的配置当底并进来再写。
+- 阈值写不进后端配置时（`writeCompactionConfig: false`，或两条通道都到不了那条），`ownPressureTrigger: "auto"` 让本插件自己在 `agent/pre-step` 上按同一口径调用 `ctx.compaction.compactIfNeeded()`；`always` = 与后端一起盯，`never` = 完全交给后端。后端被 isolate 在组里时本插件拿不到 `ctx.compaction`，`auto` 正确地不开。
 - 组合里**没有压缩后端**时谁都无法自动压缩（`compactIfNeeded` 没人实现）——设置页直接把这件事说出来，而不是静默。
 
 ## 「设置 → 上下文」分区
@@ -69,9 +71,9 @@ DSH 里「这个模型有多大上下文」（`contextWindow`）由 `@deepseek-a
 | 控件 | 作用 |
 | --- | --- |
 | 启用本插件 / 自动修正上限 / 把阈值写进压缩后端 | 三个开关，点一下就落盘并生效 |
-| 比例 + 保存 | 自动压缩阈值 `thresholdRatio`（0.05–0.99）；旁边一行写出宿主公式与当前余量 |
+| 比例 + 保存 | 自动压缩阈值 `thresholdRatio`（0.05–0.99）；旁边一行写出宿主公式与当前余量，再一行写清**这次后端配置是从哪条通道落盘的**（`configEditor` 还是 profile patch 顶层直写）和预览里 O 的口径 |
 | 探测范围 / 谁来触发压缩 | 下拉：只回环、回环+内网（默认）、所有 provider；auto（默认）/ always / never |
-| 间隔 / 超时 / 写入上限比例 / headroomTokens / retainRatio | 数字输入，随「保存高级设置」一起写 |
+| 间隔 / 超时 / 写入上限比例 / headroomTokens / retainRatio | 数字输入，随「保存高级设置」一起写；「写入上限比例」下面另有一段解释——小于 1 等于把阈值提前多少，插件永远按你填的数算，不替你改 |
 | 本分区文案语言 | `auto`（跟随 DSH「设置 → 通用 → 语言」，**切语言立刻生效**）/ 钉死 zh / en |
 | 状态表（每条路由一行） | 生效上限 W、服务端上报值与来源端点、生效阈值 tokens、状态（已一致 / **待应用** / 已修正 / 身份不符 / 问不到 / 不在探测范围 / 已钉死），以及每条自己的「探测 / 应用」按钮 |
 | 立即探测全部 / 立即应用全部待应用 / 恢复默认设置 / 清空探测记录 / 刷新 | 四个动作 + 刷新 |
@@ -127,8 +129,10 @@ DSH 里「这个模型有多大上下文」（`contextWindow`）由 `@deepseek-a
 
 ## 与宿主机制的关系
 
-- 写配置只走 `@deepseek-ai/dsh-config-editor` 的 `edit(entry, change)`：它带跨进程文件锁、按目标插件的 schema 校验、落盘 `cordis.patch.yml` 并只重组那一行。**副作用**：被改的那一行（`llm-pi-ai` / `compaction-basic`）的 `config` 节点会被整体重写，写在 config **内部**的行内注释可能被抹掉；写在行上方的注释通常保留。要留长说明请写在行上方。
+- 写配置优先走 `@deepseek-ai/dsh-config-editor` 的 `edit(entry, change)`：它带跨进程文件锁、按目标插件的 schema 校验、落盘 `cordis.patch.yml` 并只重组那一行。**副作用**：被改的那一行（`llm-pi-ai` / `compaction-basic`）的 `config` 节点会被整体重写，写在 config **内部**的行内注释可能被抹掉；写在行上方的注释通常保留。要留长说明请写在行上方。
+- `cordis:group` + `isolate` 的组合里，成员条目在 `configEditor` 的 `entries()` 里看得见、却因为没有 fiber 而改不动（宿主自己的设置页同样改不动它们）；本插件对这种情况有上面那条顶层 override 兜底。三个实测事实记在这里免得日后重新猜：`applyEntryPatches` 的 id 索引 `buildMap` 会递归进 `group` 的 `config`；同 id 有多个条目时**后建的那个赢**（本机命中的正是组里那条）；`Include` 对自己那份 patch 文件带监听，改完会 `root.update(applyPatches(...))` 热重组。
 - 读上限走 `ctx.llm.resolveModelInfo()`（不联网），读压力走 `ctx.tokenMeter.measure()`（只在自己触发时读），压缩动作只调 `ctx.compaction.compactIfNeeded()`，密钥只经 `ctx.credentials`。这些服务一律 `ctx.get(...)` 可选取用 + `typeof` 检查：缺谁就少干那件事，绝不因为拿不到服务而让插件炸。
+- 状态页显示的阈值是**预览**：宿主算阈值还要减 O（每次请求给输出预留的量），O 取自会话的请求信封；`resolveModelInfo` 不报 `defaultMaxTokens` 时预览按 0 计，所以显示值可能略高于真实触发点（真实触发只会更早，不会更晚）。
 - 不往会话里注入任何模型可见内容，不改系统提示词，不加工具，不写会话日志的新事件类型——只有 profile patch 与自己的两个 JSON 文件会被写。
 
 ## 安装 / 重载
@@ -153,7 +157,7 @@ dev_reload_package   dsh-context-governor   # 只换宿主那一半；设置页�
 node scripts/selftest.mjs        # 或 npm test（先 node --check 三个文件）
 ```
 
-13 个编号组、不联网、临时目录都在系统 tmp 下（**不碰**真实的 `~/.dsh/storages/context-governor`）：配置归一与优先级、「本地模型」判定（含 IPv6 各种写法与 CGNAT）、候选端点构造、上报值解析（Strata `/health` 与 `/v1/models`、llama.cpp `/props`、vLLM `/server_info`、TGI `/info`、Ollama 的点键与 `parameters` 文本，加身份不符 / 越界 / 没有字段 / 坏 JSON）、providers patch 生成（改条目 / 补条目 / `modelOverrides` 回退 / 无变化 / 不原地改入参）、compaction patch 与阈值公式（含预算被压平时退纯比例）、状态与设置文件（原子写、未知键保留、坏文件容错）、`probeTarget` 端到端（假 fetch：`/health` 401 退到 `/v1/models`、带 key、超时、身份不符、范围外、安全系数）、设置页 HTTP 路由（假 ctx + 真 http server + 真 fetch：`/state` `/settings` `/probe` `/apply` `/reset` `/clear`、未知路由、坏 JSON、`retain` 冲突）、生命周期（`agent/pre-step` 节流、`next()` 交还、own 触发三种口径、卸载后不空转、webServer 晚到的重试注册）、假 React 真渲染中英两版界面（词典逐 key 与占位符对齐、英文里不留中文、不把内部 key 甩成文案、开关与按钮真的 POST 出去）、脱敏扫描、清单一致性（`package.json` 的 exports/files 与实际文件、版本号与宿主里那份一致）。
+14 个编号组、不联网、临时目录都在系统 tmp 下（**不碰**真实的 `~/.dsh/storages/context-governor`）：配置归一与优先级、「本地模型」判定（含 IPv6 各种写法与 CGNAT）、候选端点构造、上报值解析（Strata `/health` 与 `/v1/models`、llama.cpp `/props`、vLLM `/server_info`、TGI `/info`、Ollama 的点键与 `parameters` 文本，加身份不符 / 越界 / 没有字段 / 坏 JSON）、providers patch 生成（改条目 / 补条目 / `modelOverrides` 回退 / 无变化 / 不原地改入参）、compaction patch 与阈值公式（含预算被压平时退纯比例）、状态与设置文件（原子写、未知键保留、坏文件容错）、`probeTarget` 端到端（假 fetch：`/health` 401 退到 `/v1/models`、带 key、超时、连不上两次就早停、身份不符、范围外、安全系数）、设置页 HTTP 路由（假 ctx + 真 http server + 真 fetch：`/state` `/settings` `/probe` `/apply` `/reset` `/clear`、未知路由、坏 JSON、`retain` 冲突）、生命周期（`agent/pre-step` 节流、`next()` 交还、own 触发三种口径、卸载后不空转、webServer 晚到的重试注册）、假 React 真渲染中英两版界面（词典逐 key 与占位符对齐、英文里不留中文、不把内部 key 甩成文案、开关与按钮真的 POST 出去）、脱敏扫描、清单一致性（`package.json` 的 exports/files 与实际文件、版本号与宿主里那份一致）、profile patch 顶层直写（追加 / 幂等 / 就地改写连注释 / 带 `!!js` 不动 / CRLF 保持 / 缩进里的同名条目不当入口 / 合并语义 / YAML 值渲染，以及假 `configEditor` 直拒后的完整兜底落盘——顺带盯住「链里再 enqueue」不得把自己等死）。
 
 ## 零依赖红线
 
@@ -165,7 +169,8 @@ node scripts/selftest.mjs        # 或 npm test（先 node --check 三个文件�
 - **没回显模型名的端点只能「未核对」地接受**：状态里会写明「服务端没回显模型名」。这类端点若在同一端口上换过模型，本插件只能靠 TTL 内的下一次探测追上来。
 - **只改 `contextWindow`，不改 `maxTokens`**：输出预留来自请求信封或路由默认值，本插件不碰。
 - **`modelOverrides` 只在目录型路由上可用**：手工声明且没有 `models` 列表的路由（极少），宿主不接受 `modelOverrides`，此时插件会报 `row_missing`/写入失败而不是硬写。
-- **同一 profile 内多个宿主进程并发写 patch** 由 configEditor 的文件锁串行；本插件额外把写入排成一条队。
+- **同一 profile 内多个宿主进程并发写 patch** 由 configEditor 的文件锁串行；本插件额外把写入排成一条队。**兜底那条通道不受这把锁管**（它写的是 `cordis.patch.yml` 而不是 `package.json`）：插件在写之前会重读全文再改自己那一段，窗口很小，但如果同一瞬间宿主也在改这份文件，理论上是"后写的赢"。不想承担这点风险就把 `writeCompactionConfig` 关掉，自己维护那一行。
+- **手工写在 patch 里的那一行可能被本插件改写**：兜底通道认的是顶层 `- id: compaction-basic` 这一段，内容不一致就会整段换成它算出来的样子（别人写的键会并进来当底，但格式与注释不保留）。想让那一行完全归你，就把「把阈值写进压缩后端」关掉。
 - **压缩本身仍由压缩后端做**（本插件只在写不进阈值时顶上），摘要质量与 `/compact` 行为都属于 `dsh-compaction-basic`。
 
 ## 许可
