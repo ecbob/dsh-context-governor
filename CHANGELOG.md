@@ -3,6 +3,13 @@
 All notable changes to `dsh-context-governor` are documented here. The Chinese twin is
 [`CHANGELOG.zh-CN.md`](CHANGELOG.zh-CN.md); both are maintained together.
 
+## 0.1.2 — 2026-10-25
+
+### Changed
+
+- Package metadata now carries `repository` / `bugs` / `homepage`: the public GitHub repository `ecbob/dsh-context-governor` is created and pushed (`main` plus version tags). Plugin behaviour, configuration keys and defaults are untouched.
+- Documentation corrected against today's measurements (two places in each README: "when it takes effect" and "known limitations"): a changed `contextWindow` applies from the next request, while `thresholdRatio` / `retainRatio` written into the patch reach the *entry* within seconds but **the compaction instance already serving this session keeps the config it was constructed with** — the ratio was dropped to 0.45 here with pressure above the threshold for four consecutive steps and nothing compacted; it takes a restart to count.
+
 ## 0.1.1 — 2026-10-25
 
 ### Added

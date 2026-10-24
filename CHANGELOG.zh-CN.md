@@ -2,6 +2,13 @@
 
 `dsh-context-governor` 的全部可见变化记在这里；英文版 [`CHANGELOG.md`](CHANGELOG.md) 与此文件一同维护。
 
+## 0.1.2 — 2026-10-25
+
+### 变更
+
+- 补包元数据 `repository` / `bugs` / `homepage`：GitHub 公开仓库 `ecbob/dsh-context-governor` 已建好并推上 `main` 与版本标签。插件行为、配置项、默认值都没动。
+- 文档口径按今天的实测更正（README 的「生效时机」与「已知限制」两处）：`contextWindow` 下一个请求就换；压缩后端的 `thresholdRatio` / `retainRatio` 写进 patch 后条目层几秒就换新，但**正在跑的会话里那个压缩实例仍用它启动时那份配置**——本机把阈值降到 0.45、压力超出阈值四步都没压，要到重启才算数。
+
 ## 0.1.1 — 2026-10-25
 
 ### 新增

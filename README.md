@@ -137,10 +137,16 @@ Both are **atomic writes** (temporary file + rename), so a concurrent reader nev
 
 ## Install / reload
 
+Repository: <https://github.com/ecbob/dsh-context-governor> (public, `main` plus version tags). `<version>` below is whatever `package.json` says.
+
 ```bash
 # regular install: ship the packed artifact
 copy dist\dsh-context-governor-<version>.tgz %USERPROFILE%\.dsh\.plugin-sources\
 dsh plugin --profile desktop add "%USERPROFILE%\.dsh\.plugin-sources\dsh-context-governor-<version>.tgz"
+
+# from source: clone and pack it yourself (the repo carries no build artifact; the tgz is made by npm run pack)
+git clone https://github.com/ecbob/dsh-context-governor.git
+cd dsh-context-governor && npm test && npm run pack   # lands in dist\
 
 # development: hot composition (no restart)
 dev_install_package  dir=<absolute path of this checkout>  profile=desktop

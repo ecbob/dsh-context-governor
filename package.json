@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-governor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Keeps the Harness context ceiling honest for local models: asks the model endpoint for the maximum context it actually reports (Strata /health max_context, OpenAI-compatible /v1/models, llama.cpp /props, vLLM /server_info, Ollama /api/show), fixes the routed provider model's contextWindow in the profile patch, and drives automatic compaction at a ratio you choose (default: compact once the session reaches 0.8 of the window). Host side plus a bilingual Settings → Context section; zero external dependencies.",
   "type": "module",
   "main": "lib/index.js",
@@ -26,6 +26,14 @@
   ],
   "license": "MIT",
   "author": "ecbob",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ecbob/dsh-context-governor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ecbob/dsh-context-governor/issues"
+  },
+  "homepage": "https://github.com/ecbob/dsh-context-governor#readme",
   "keywords": [
     "dsh",
     "dsh-plugin",

@@ -137,10 +137,16 @@ DSH 里「这个模型有多大上下文」（`contextWindow`）由 `@deepseek-a
 
 ## 安装 / 重载
 
+仓库：<https://github.com/ecbob/dsh-context-governor>（public，`main` + 版本标签）。下面 `<版本>` 就是 `package.json` 里那个版本号。
+
 ```bash
 # 普通安装：装打包产物
 copy dist\dsh-context-governor-<版本>.tgz %USERPROFILE%\.dsh\.plugin-sources\
 dsh plugin --profile desktop add "%USERPROFILE%\.dsh\.plugin-sources\dsh-context-governor-<版本>.tgz"
+
+# 源码装法：clone 下来自己打包（仓库里没有构建产物，tgz 是 npm run pack 现打的）
+git clone https://github.com/ecbob/dsh-context-governor.git
+cd dsh-context-governor && npm test && npm run pack   # 产物落 dist\
 
 # 开发期：热装配（免重启）
 dev_install_package  dir=<本仓库绝对路径>  profile=desktop
