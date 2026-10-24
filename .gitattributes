@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+# 换行钉死成 LF：本仓库源码与文档都以 LF 存，git 不做 CRLF 转换。
+# 本机全局 core.autocrlf=true，不钉这一行的话 `git status` 会凭空显示"已修改"，
+# 跨平台比对与自检里的字节比对也会被骗。
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.svg text eol=lf
+*.tgz binary
+*.zip binary

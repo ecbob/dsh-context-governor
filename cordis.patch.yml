@@ -1,0 +1,67 @@
+# dsh-context-governor bundle patch.
+# 注册 Cordis 插件行 `context-governor`：本地模型上下文上限自动校正 + 自动压缩阈值托管。
+#
+# 它干两件事：
+#   1. 问本地模型服务端「你现在这个模型的最大上下文是多少」——依次试
+#      Strata 的 GET /health（max_context）、OpenAI 兼容的 GET {baseURL}/models（meta.n_ctx /
+#      contextWindow / context_length / max_input_tokens / limit.context）、llama.cpp 的
+#      GET /props（default_generation_settings.n_ctx）、vLLM 的 GET /server_info
+#      （max_model_len）、Ollama 的 POST /api/show（context_length / num_ctx）。
+#      拿到之后把 profile patch 里 @deepseek-ai/dsh-llm-pi-ai 那条的
+#      providers.<provider>.models[].contextWindow 改成上报值（经 configEditor 落盘并热生效，
+#      不重启 DSH）。写之前做身份核对：服务端报了别的模型就不写。
+#   2. 把 profile patch 里 @deepseek-ai/dsh-compaction-basic 那条的 thresholdRatio 写成
+#      本插件设定的比例（默认 0.8），于是「到窗口的 0.8 就自动压缩」这条策略由本插件托管；
+#      宿主默认公式 floor(min(W×ratio, W−O−headroomTokens)) 不变（W=生效上限，O=请求输出预留）。
+#
+# 首选入口是**设置页**：DSH 桌面端「设置 → 上下文」分区（客户端半个插件 lib/client.js）。
+#   分区里的选择写进 ~/.dsh/storages/context-governor/settings.json，**改完立刻生效**，
+#   优先级：settings.json（设置页）> 本文件的 config > 插件内置默认值。
+#   所以这里保持默认值即可——要长期改比例请在设置页里改，不必动本文件。
+#
+# 上报值写不写、什么时候写，都在「立即探测 / 立即应用」这两个按钮和 autoFixContextWindow 开关上；
+# 想把某个模型钉死不让插件动，写 `pins:` 列表（见文末示例）。
+- insert:
+    - id: context-governor
+      name: dsh-context-governor
+      config:
+        enabled: true
+        # 自动修正：探测到上报值与生效上限不一致就直接写 patch 并热生效；关掉则只在设置页里
+        # 显示「待应用」，由你点「立即应用」才写。
+        autoFixContextWindow: true
+        # 自动压缩阈值：到 W×该比例即压缩。0.05–0.99，默认 0.8（与宿主默认一致）。
+        thresholdRatio: 0.8
+        # 把 thresholdRatio 写进 compaction-basic 的 patch 配置（关掉则只走 ownPressureTrigger）。
+        writeCompactionConfig: true
+        # 本插件自己触发压缩：auto = 只在「阈值写不进压缩后端配置」时自己盯（writeCompactionConfig 关掉，
+        # 或 compaction-basic 那条行不归本 profile 写）；always = 与后端一起盯；never = 完全交给后端。
+        # 组合里根本没有压缩后端时谁都压缩不了（compactIfNeeded 没人实现），设置页会直接说明这件事。
+        ownPressureTrigger: "auto"
+        # 探测范围：loopback-private = 回环 + 内网（127.x/localhost/10.x/172.16–31.x/192.168.x/
+        # 100.64–127.x/169.254.x/.local）；loopback = 只回环；any = 所有 provider 端点都问。
+        probeScope: "loopback-private"
+        probeIntervalMs: 30000   # 同一 provider+model 两次探测的最小间隔
+        probeTimeoutMs: 2500     # 单次 HTTP 探测超时
+        # 探测用的 key；留空则按 provider 配置里的 apiKeyEnv 经凭据 seam 解析（解析不到就走免鉴权端点，
+        # 例如 Strata 的 /health）。别在这里写明文密钥。
+        probeApiKey: ""
+        contextSafetyRatio: 1    # 0.5–1：写进去的上限 = 上报值 × 该比例
+        minReportedContextWindow: 1024
+        maxReportedContextWindow: 8388608
+        maxWritesPerHour: 10     # 防抖：一小时最多写几次 patch
+        minWriteIntervalMs: 2000 # 两次 patch 写入的最小间隔
+        # headroomTokens / retainRatio / retainTokens：null = 不动宿主默认（65536 / 0.16）。
+        # 小窗口本地模型常要调小 headroomTokens，否则 W−O−headroom 会把阈值压到极低。
+        headroomTokens: null
+        retainRatio: null
+        retainTokens: null
+        stateFile: ""            # 自定义状态文件路径；空 = ~/.dsh/storages/context-governor/state.json
+        language: "auto"         # 设置页文案语言：auto 跟随 DSH 当前语言，zh / en 钉死
+
+# 钉死某个模型的上限、不让插件覆盖的示例（取消注释即用）：
+# - insert:
+#     - id: context-governor
+#       name: dsh-context-governor
+#       config:
+#         pins:
+#           - { provider: "strata8080", model: "qwen3.8-flash-next-iq3_xxs", contextWindow: 262144 }

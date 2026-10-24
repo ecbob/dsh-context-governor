@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "上下文管家",
+    "description": "问本地模型服务端上报的最大上下文，按它改写 profile patch 里当前会话模型的 contextWindow，并把自动压缩阈值托管成你设定的比例（默认到达 0.8 就压缩）。"
+  }
+}

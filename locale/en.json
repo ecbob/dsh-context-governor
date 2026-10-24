@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Context Governor",
+    "description": "Asks the local model endpoint for the maximum context it reports, fixes the routed model's contextWindow in the profile patch, and keeps automatic compaction firing at the ratio you choose (default 0.8)."
+  }
+}
